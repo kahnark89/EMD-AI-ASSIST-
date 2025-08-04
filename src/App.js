@@ -1,22 +1,18 @@
 import React, { useState, useEffect, useRef } from 'react';
 
 // --- Use REAL Firebase Services ---
-// We are now using the actual Firebase SDK.
 import { initializeApp } from 'firebase/app';
 import { getAuth, onAuthStateChanged, signInAnonymously } from 'firebase/auth';
-import { getFirestore, collection, query, getDocs } from 'firebase/firestore';
 import { getFunctions, httpsCallable } from 'firebase/functions';
-import { getStorage, ref, uploadBytes } from 'firebase/storage';
-
+import { getStorage, ref, uploadBytesResumable } from 'firebase/storage';
 
 // --- 1. Firebase Configuration (User Provided) ---
-// These are your actual Firebase project configuration keys.
 const firebaseConfig = {
   apiKey: "AIzaSyD6kMYzvTY7KTl4OAbNwlG9Riudoq2mAYE",
   authDomain: "emd-ai-assist.firebaseapp.com",
   databaseURL: "https://emd-ai-assist-default-rtdb.firebaseio.com",
   projectId: "emd-ai-assist",
-  storageBucket: "emd-ai-assist.appspot.com", // Corrected storage bucket URL
+  storageBucket: "emd-ai-assist.appspot.com",
   messagingSenderId: "327202754237",
   appId: "1:327202754237:web:2c517e70d4a0d676a171d4",
   measurementId: "G-471FPVCG16"
@@ -25,7 +21,6 @@ const firebaseConfig = {
 // Initialize Firebase
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
-const db = getFirestore(app);
 const functions = getFunctions(app);
 const storage = getStorage(app);
 
@@ -35,7 +30,6 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [isInitializing, setIsInitializing] = useState(true);
 
-  // This effect runs once to set up authentication
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       if (currentUser) {
@@ -48,7 +42,6 @@ export default function App() {
     return () => unsubscribe();
   }, []);
   
-  // Inject all the CSS styles from the blueprint into the document head
   useEffect(() => {
     const styleTag = document.createElement('style');
     styleTag.innerHTML = chatbotStyles;
@@ -73,7 +66,6 @@ export default function App() {
 // --- 3. UI Components ---
 
 const ChatRoom = ({ user }) => {
-  // State management for the chat
   const [messages, setMessages] = useState([
       {
         id: 'welcome',
@@ -87,7 +79,6 @@ const ChatRoom = ({ user }) => {
   const messagesEndRef = useRef(null);
   const recognitionRef = useRef(null);
 
-  // Effect to scroll to the bottom when new messages are added
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
@@ -101,7 +92,6 @@ const ChatRoom = ({ user }) => {
     const currentHistory = messages.filter(m => m.role !== 'system');
     setInput('');
     
-    // Add user message to the local state
     const userMessage = {
       id: `msg_${Date.now()}`,
       role: 'user',
@@ -110,7 +100,7 @@ const ChatRoom = ({ user }) => {
     setMessages(prev => [...prev, userMessage]);
     setIsTyping(true);
     
-    // --- LIVE BACKEND LOGIC (CALLING CLOUD FUNCTION) ---
+    // --- FINAL: CALL THE LIVE CLOUD FUNCTION ---
     try {
         const getAiResponse = httpsCallable(functions, 'getAiResponse');
         const result = await getAiResponse({ 
@@ -120,15 +110,12 @@ const ChatRoom = ({ user }) => {
 
         const aiResponseText = result.data.response;
 
-        // Add AI response to chat
         const assistantMessage = {
             id: `msg_${Date.now() + 1}`,
             role: 'assistant',
             content: aiResponseText,
         };
         setMessages(prev => [...prev, assistantMessage]);
-        // Disabling automatic voice for better UX, can be re-enabled if desired
-        // speak(aiResponseText);
 
     } catch (error) {
         console.error("Error calling getAiResponse function:", error);
@@ -152,7 +139,7 @@ const ChatRoom = ({ user }) => {
 
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
-      alert("Voice recognition is not supported in your browser. Please use Chrome or Safari.");
+      alert("Voice recognition is not supported in your browser.");
       return;
     }
 
@@ -248,40 +235,44 @@ const TypingIndicator = () => (
 
 const MessageInput = ({ onSendMessage, input, setInput, disabled, toggleVoiceInput, isListening, user }) => {
     const [uploading, setUploading] = useState(false);
-    const [progress, setProgress] = useState(0); // Not used in this version but kept for future use
+    const [progress, setProgress] = useState(0);
 
-    const handleFileUpload = async (e) => {
-        const files = e.target.files;
-        if (!files.length || !user) return;
-        const file = files[0];
+    const handleFileUpload = (e) => {
+        const file = e.target.files[0];
+        if (!file || !user) return;
 
         if (file.type !== 'application/pdf') {
             alert("Please upload PDF files only.");
             return;
         }
 
-        setUploading(true);
-        
-        // Use a unique file name to prevent overwrites
-        const uniqueFileName = `${Date.now()}-${file.name}`;
-        const storageRef = ref(storage, `uploads/${user.uid}/${uniqueFileName}`);
+        const uniqueFileName = `${user.uid}-${Date.now()}-${file.name}`;
+        const storageRef = ref(storage, `uploads/${uniqueFileName}`);
+        const uploadTask = uploadBytesResumable(storageRef, file);
 
-        try {
-            await uploadBytes(storageRef, file);
-            alert(`Upload of "${file.name}" complete! The backend will now process and index it. This may take a few minutes.`);
-        } catch (error) {
-            console.error("Upload failed:", error);
-            alert(`Upload failed: ${error.message}`);
-        } finally {
-            setUploading(false);
-        }
+        uploadTask.on('state_changed', 
+            (snapshot) => {
+                setUploading(true);
+                const prog = Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100);
+                setProgress(prog);
+            }, 
+            (error) => {
+                console.error("Upload failed:", error);
+                alert(`Upload failed: ${error.message}`);
+                setUploading(false);
+            }, 
+            () => {
+                setUploading(false);
+                alert(`Upload of "${file.name}" complete! The backend will now process and index it. This may take a few minutes.`);
+            }
+        );
     };
 
     return (
         <div className="message-input-container">
             <div className="message-input-wrapper">
                 <label htmlFor="file-upload" className={`file-upload-button ${uploading ? 'uploading' : ''}`}>
-                    {uploading ? '...' : '📄'}
+                    {uploading ? `${progress}%` : '📄'}
                 </label>
                 <input 
                     id="file-upload" 
